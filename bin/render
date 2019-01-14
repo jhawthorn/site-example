@@ -1,0 +1,153 @@
+#!/usr/bin/env ruby
+
+require 'yaml'
+require 'kramdown'
+require 'rouge'
+require 'nokogiri'
+require 'crass'
+
+class RougeGithubFormatter < Rouge::Formatters::HTMLInline
+  def initialize(opts={})
+    super('github')
+  end
+
+  def safe_span(tok, safe_val)
+    return safe_val if tok == Rouge::Token::Tokens::Text
+
+    rules = @theme.style_for(tok)
+    rules.delete(:bold)
+    rules.delete(:bg)
+    rules.delete(:fg) if rules[:fg] == '#000000'
+
+    if rules.empty?
+      safe_val
+    else
+      rules = rules.rendered_rules
+
+      "<span style=\"#{rules.to_a.join(';')}\">#{safe_val}</span>"
+    end
+  end
+end
+
+def summary_from(html)
+  doc = Nokogiri::HTML(html)
+  doc.css('.no-summary').each(&:remove)
+  text = doc.text
+  text.gsub(/\n\n+/, "\n").strip[0..300]
+end
+
+def render data
+  markdown = data['content']
+  doc = Kramdown::Document.new(
+    markdown,
+    input: 'GFM',
+    syntax_highlighter: 'rouge',
+    syntax_highlighter_opts: {
+      formatter: RougeGithubFormatter
+    },
+    hard_wrap: false
+  )
+  html = doc.to_html
+  data['content'] = html
+  data['summary'] ||= summary_from(html)
+  data
+end
+
+def parse content
+  yaml_regex = /\A(---\s*\n.*?\n?)^(---\s*$\n?)/m
+  data = if content =~ yaml_regex
+    content = content.sub(yaml_regex, '')
+
+    YAML.load($1)
+  end || {}
+  data['content'] = content
+  data
+end
+
+def layout layout, data
+  # avoids missing key errors, and accepts either strings or symbols
+  layout.gsub(/%{([a-z_]+)}/i) do |key|
+    data[$1] || data[$1.to_sym] || $&
+  end
+end
+
+def minify_css(tree)
+  return tree unless tree
+  tree.reject do |node|
+    next true if node[:node] == :whitespace
+  end.map do |node|
+    if node[:children]
+      node = node.merge(children: minify_css(node[:children]))
+    end
+
+    node
+  end
+end
+
+def inline_style(html, data)
+  css = File.read(File.expand_path("../../static/style.css", __FILE__))
+  tree = Crass.parse(css, preserve_comments: false)
+  tree = minify_css(tree)
+
+  doc = Nokogiri::HTML(html)
+  tree.reject! do |node|
+    next false if node[:node] != :style_rule
+    selectors = node[:selector][:value].split(/\s*,\s*/)
+    selectors.all? do |selector|
+      selector = selector.gsub(/:[a-z]+$/, '')
+      doc.css(selector).empty?
+    end
+  end
+
+  css = Crass::Parser.stringify(tree)
+  css
+end
+
+def remove_css(html, selector)
+  doc = Nokogiri::HTML(html)
+  doc.css(selector).each(&:remove)
+  doc.to_html
+end
+
+INPUT = ARGF.read
+LAYOUT = DATA.read
+
+data = parse(INPUT)
+data['published_on'] ||= ""
+data = render(data)
+output = layout(LAYOUT, data)
+output = remove_css(output, data['remove']) if data['remove']
+output = layout(output, inline_style: inline_style(output, data))
+puts output
+
+__END__
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>%{title} - John Hawthorn</title>
+<meta name="viewport" content="width=device-width">
+<style>%{inline_style}</style>
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:site" content="@jhawthorn" />
+<meta name="twitter:title" content="%{title}" />
+<meta name="twitter:description" content="%{summary}" />
+<meta name="date" content="%{published_on}" />
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link type="application/atom+xml" rel="alternate" title="Atom 1.0" href="/atom.xml" />
+</head>
+<body>
+<article>
+<a class="byline" href="/">John Hawthorn</a>
+<h1>%{title}</h1>
+%{content}
+</article>
+
+<footer>
+By <a href="/">John Hawthorn</a>
+<br/><br/>
+<a href="https://github.com/jhawthorn">github.com/jhawthorn</a><br/>
+<a href="https://twitter.com/jhawthorn">twitter.com/jhawthorn</a><br/>
+</footer>
+</body>
+</html>

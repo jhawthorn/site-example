@@ -1,0 +1,99 @@
+#!/usr/bin/env ruby
+
+require 'date'
+require 'pathname'
+require 'uri'
+
+require 'nokogiri'
+require 'nokogiri/xml/builder'
+
+DOMAIN='https://www.johnhawthorn.com/'
+ROOT=Pathname.new('build')
+
+class Page
+  attr_reader :filename, :path, :url
+
+  def initialize(filename)
+    @filename = filename
+    path = Pathname.new(filename)
+    path = path.relative_path_from(ROOT).to_s
+    path[/index.html\z/] = ''
+    @path = path
+    @url = URI.join(DOMAIN, @path).to_s
+  end
+
+  def doc
+    @doc ||= Nokogiri::HTML(File.read(@filename))
+  end
+
+  def meta_value(name)
+    doc.at("meta[@name='#{name}']")['content']
+  end
+  private :meta_value
+
+  def title
+    doc.at('title').text
+  end
+
+  def description
+    meta_value('twitter:description')
+  end
+
+  def date
+    DateTime.parse(meta_value('date'))
+  end
+
+  def content
+    content = doc.at('body/article')
+    content.css('div.highlighter-rouge').each do |item|
+      item.name = "pre"
+    end
+    content
+  end
+
+  def self.all
+    ARGV.map(&method(:new)).select do |page|
+      page.path =~ /\A\d\d\d\d\//
+    end.reject do |page|
+      if page.date
+        false
+      else
+        warn "WARNING: #{page.filename} has no date"
+        true
+      end
+    end.sort_by do |page|
+      page.date
+    end.reverse
+  end
+end
+
+AUTHOR_NAME="John Hawthorn"
+AUTHOR_EMAIL="john@hawthorn.email"
+
+pages = Page.all
+builder = Nokogiri::XML::Builder.new(encoding: 'utf-8') do |xml|
+  xml.feed xmlns: "http://www.w3.org/2005/Atom", "xml:lang": "en" do
+    xml.id DOMAIN
+    xml.title "John Hawthorn's blog"
+    xml.updated pages.first.date.rfc3339
+    xml.link rel: 'self', href: URI.join(DOMAIN, 'atom.xml')
+    xml.link rel: 'alternate', type: "text/html", href: DOMAIN
+
+    xml.author do
+      xml.name AUTHOR_NAME
+      xml.email AUTHOR_EMAIL
+    end
+
+    pages.first(2).each do |page|
+      xml.entry do
+        xml.title page.title
+        xml.id page.url
+        xml.updated page.date.rfc3339
+
+        xml.link rel: "alternate", type: "text/html", href: page.url
+        xml.content page.content.to_html, :type => "html"
+      end
+    end
+  end
+end
+puts builder.to_xml

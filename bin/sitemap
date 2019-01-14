@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+require 'pathname'
+require 'uri'
+require 'nokogiri'
+require 'nokogiri/xml/builder'
+
+DOMAIN='https://www.johnhawthorn.com/'
+ROOT=Pathname.new('build')
+
+class Page
+  attr_reader :path, :url
+
+  def initialize(filename)
+    path = Pathname.new(filename)
+    path = path.relative_path_from(ROOT).to_s
+    path[/index.html\z/] = ''
+    @path = path
+    @url = URI.join(DOMAIN, @path).to_s
+  end
+
+  def self.all
+    ARGV.map(&method(:new)).reject do |page|
+      page.path.start_with?('unlisted/') ||
+      page.path.start_with?('wip/')
+    end.sort_by do |page|
+      page.path
+    end
+  end
+end
+
+builder = Nokogiri::XML::Builder.new(encoding: 'UTF-8') do |xml|
+  xml.urlset xmlns: "http://www.sitemaps.org/schemas/sitemap/0.9" do
+    Page.all.each do |page|
+      xml.url do
+        xml.loc page.url
+      end
+    end
+  end
+end
+puts builder.to_xml
